@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<!--
+  Viper850 as modelled by ViSP (vpViper / vpViper850 / vpSimulatorViper850).
+  Closed-form FK of vpViper::get_fMe() is equivalent to this chain:
+    Rz(q1) T(a1,0,d1) Ry(q2) T(a2,0,0) Ry(q3) T(-a3,0,d4) Rz(q4) Ry(q5) Rz(q6) T(0,0,d6)
+  a1=0.075 a2=0.365 a3=0.090 d1=0.335 d4=0.405 d6=0.080+0.1016 (vpViper850 ctor)
+  Joint limits: those set by vpSimulatorViper850::init() (narrower than the real robot).
+  Camera: default tool of the simulator (PTGrey Flea2 6mm, without distortion).
+  Kinematics only: no inertias, no meshes, velocity limits are placeholders.
+-->
+<robot name="viper850_sim">
+  <link name="base_link"/>
+  <link name="link1"/>
+  <link name="link2"/>
+  <link name="link3"/>
+  <link name="link4"/>
+  <link name="link5"/>
+  <link name="link6"/>
+  <link name="tool"/>
+  <link name="camera_link"/>
+
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/><child link="link1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-0.872665" upper="0.872665" effort="100" velocity="1.0"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/><child link="link2"/>
+    <origin xyz="0.075 0 0.335" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-2.356194" upper="-0.698132" effort="100" velocity="1.0"/>
+  </joint>
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/><child link="link3"/>
+    <origin xyz="0.365 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-0.698132" upper="3.752458" effort="100" velocity="1.0"/>
+  </joint>
+  <joint name="joint4" type="revolute">
+    <parent link="link3"/><child link="link4"/>
+    <origin xyz="-0.090 0 0.405" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-3.316126" upper="3.316126" effort="50" velocity="1.0"/>
+  </joint>
+  <joint name="joint5" type="revolute">
+    <parent link="link4"/><child link="link5"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-1.919862" upper="1.919862" effort="50" velocity="1.0"/>
+  </joint>
+  <joint name="joint6" type="revolute">
+    <parent link="link5"/><child link="link6"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-3.211406" upper="3.211406" effort="20" velocity="1.0"/>
+  </joint>
+  <!-- end-effector frame "e" of ViSP (d6 includes the 0.1016 tool-changer offset) -->
+  <joint name="tool_joint" type="fixed">
+    <parent link="link6"/><child link="tool"/>
+    <origin xyz="0 0 0.1816" rpy="0 0 0"/>
+  </joint>
+  <!-- eMc of vpSimulatorViper850 default tool: etc=(-0.04558630, -0.00134327, 0.00100083),
+       erc (vpRxyzVector) = (0.15277643, 1.28509246, -90.75777848) deg, converted to URDF rpy -->
+  <joint name="camera_joint" type="fixed">
+    <parent link="tool"/><child link="camera_link"/>
+    <origin xyz="-0.04558630174 -0.00134326752 0.001000828017" rpy="-0.0224623895 0.0023696109 -1.5840187666"/>
+  </joint>
+</robot>
