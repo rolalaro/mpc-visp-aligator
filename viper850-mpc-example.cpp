@@ -140,9 +140,9 @@ public:
   {
     pin::forwardKinematics(model_, pdata_, x.head(model_.nq));
     pin::updateFramePlacement(model_, pdata_, fid_);
-    const auto &cMo = pdata_.oMf[fid_];
+    const auto &fMc = pdata_.oMf[fid_];
     for (std::size_t i = 0; i < target_->p_w.size(); ++i) {
-      const Eigen::Vector3d pc = cMo.actInv(target_->p_w[i]);
+      const Eigen::Vector3d pc = fMc.actInv(target_->p_w[i]);
       const double Z = std::max(pc.z(), 1e-3);
       data.value_.segment<2>(2 * i) =
         Eigen::Vector2d(pc.x() / Z, pc.y() / Z) - target_->s_ref[i];
@@ -153,12 +153,14 @@ public:
                         Data &data) const override
   {
     const Eigen::VectorXd q = x.head(model_.nq);
-    pin::computeFrameJacobian(model_, pdata_, q, fid_, pin::LOCAL, J_);
-    const auto &cMo = pdata_.oMf[fid_];
+    pin::computeJointJacobians(model_, pdata_, q);   // runs FK for this q
+    pin::updateFramePlacement(model_, pdata_, fid_); // refresh oMf for this q
+    pin::getFrameJacobian(model_, pdata_, fid_, pin::LOCAL, J_);
+    const auto &fMc = pdata_.oMf[fid_];              // now consistent with J_
     data.Jx_.setZero();
     data.Ju_.setZero();
     for (std::size_t i = 0; i < target_->p_w.size(); ++i) {
-      const Eigen::Vector3d pc = cMo.actInv(target_->p_w[i]);
+      const Eigen::Vector3d pc = fMc.actInv(target_->p_w[i]);
       const double Z = std::max(pc.z(), 1e-3);
       Eigen::Matrix<double, 2, 3> Ls;
       Ls << 1, 0, -pc.x() / Z,
@@ -286,9 +288,9 @@ public:
   {
     pin::forwardKinematics(model_, pdata_, x.head(model_.nq));
     pin::updateFramePlacement(model_, pdata_, fid_);
-    const auto &oMc = pdata_.oMf[fid_];
+    const auto &fMc = pdata_.oMf[fid_];
     for (std::size_t i = 0; i < target_->p_w.size(); ++i) {
-      const Eigen::Vector3d pc = oMc.actInv(target_->p_w[i]);
+      const Eigen::Vector3d pc = fMc.actInv(target_->p_w[i]);
       data.value_.segment<5>(5 * i) = C_ * pc + d_;
     }
   }
@@ -300,10 +302,12 @@ public:
     data.Ju_.setZero();
 
     const Eigen::VectorXd q = x.head(model_.nq);
-    pin::computeFrameJacobian(model_, pdata_, q, fid_, pin::LOCAL, J_);
-    const auto &oMc = pdata_.oMf[fid_];
+    pin::computeJointJacobians(model_, pdata_, q);   // runs FK for this q
+    pin::updateFramePlacement(model_, pdata_, fid_); // refresh oMf for this q
+    pin::getFrameJacobian(model_, pdata_, fid_, pin::LOCAL, J_);
+    const auto &fMc = pdata_.oMf[fid_];              // now consistent with J_
     for (std::size_t i = 0; i < target_->p_w.size(); ++i) {
-      const Eigen::Vector3d pc = oMc.actInv(target_->p_w[i]);
+      const Eigen::Vector3d pc = fMc.actInv(target_->p_w[i]);
       // d p_c / dq = -J_v + [p_c]_x J_w
       const MatrixXs dpc =
         -J_.topRows<3>() + pin::skew(pc) * J_.bottomRows<3>();
