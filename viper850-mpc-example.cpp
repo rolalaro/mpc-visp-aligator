@@ -324,8 +324,9 @@ private:
 // ---------------------------------------------------------------------------
 // Relaxed-log-barrier cost on any constraint function g(x,u) <= 0.
 //   h_i = -g_i / scale   (h_i > 0  <=>  constraint satisfied)
-//   B(h) = -mu log h                                   if h > delta
-//        = mu/2 [((h-2delta)/delta)^2 - 1] - mu log delta   otherwise
+//   B(h) = μ ( h/h_on − 1 − log(h/h_on) )   for delta < h < h_on     (B = B' = 0 at h_on)
+//   B(h) = 0                                 for h ≥ h_on
+//   B(h) = quadratic extension of the above  for h ≤ delta           (matches value, slope, curvature at delta)
 // ---------------------------------------------------------------------------
 template <class Func>
 class RelaxedBarrierCost : public CostAbstractTpl<Scalar>
