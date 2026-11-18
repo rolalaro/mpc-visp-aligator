@@ -434,14 +434,14 @@ using FovBarrierCost = RelaxedBarrierCost<FieldOfViewConstraint>;
 using ManipBarrierCost = RelaxedBarrierCost<ManipulabilityConstraint>;
 
 // List of allowed command line options
-#define GETOPTARGS "cdhu:f:"
+#define GETOPTARGS "cdhu:f:mv"
 
 #ifdef ENABLE_VISP_NAMESPACE
 using namespace VISP_NAMESPACE_NAME;
 #endif
 
 void usage(const char *name, const char *badparam);
-bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name);
+bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name, bool &use_manipulability, bool &use_fov);
 
 /*!
 
@@ -461,7 +461,7 @@ Tests a control law with the following characteristics:\n\
 - internal and external camera view displays.\n\
           \n\
 SYNOPSIS\n\
-  %s [-u <urdf_path>] [-f <camera_frame_name>] [-c] [-d] [-h]\n",
+  %s [-u <urdf_path>] [-f <camera_frame_name>] [-m] [-v] [-c] [-d] [-h]\n",
           name);
 
   fprintf(stdout, "\n\
@@ -471,6 +471,12 @@ OPTIONS:                                               Default\n\
                   \n\
   -f \n\
      Name of the camera frame in the URDF.\n\
+                  \n\
+  -m \n\
+     Turn off the manipulability constraints and cost.\n\
+                  \n\
+  -v \n\
+     Turn off the field of view constraints and cost.\n\
                   \n\
   -c\n\
      Disable the mouse click. Useful to automate the \n\
@@ -495,11 +501,13 @@ Set the program options.
   \param click_allowed : Click activation.
   \param urdf_path : Path towards the URDF of the robot.
   \param camera_frame_name : Name of the camera frame in the URDF.
+  \param use_manipulability : Activate manipulability constraints and cost.
+  \param use_fov : Activate field of view constraints and cost.
 
   \return false if the program has to be stopped, true otherwise.
 
 */
-bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name)
+bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name, bool &use_manipulability, bool &use_fov)
 {
   const char *optarg_;
   int c;
@@ -511,6 +519,12 @@ bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display,
       break;
     case 'd':
       display = false;
+      break;
+    case 'm':
+      use_manipulability = false;
+      break;
+    case 'v':
+      use_fov = false;
       break;
     case 'u':
       urdf_path = std::string(optarg_);
@@ -549,11 +563,13 @@ int main(int argc, const char **argv)
   try {
     bool opt_click_allowed = true;
     bool opt_display = true;
+    bool opt_use_manipulability = true;
+    bool opt_use_fov = true;
     std::string opt_urdf_path = vpIoTools::createFilePath("urdf", "viper850_sim.urdf");
     std::string opt_camera_frame_name = std::string("camera_link");
 
     // Read the command line options
-    if (getOptions(argc, argv, opt_click_allowed, opt_display, opt_urdf_path, opt_camera_frame_name) == false) {
+    if (getOptions(argc, argv, opt_click_allowed, opt_display, opt_urdf_path, opt_camera_frame_name, opt_use_manipulability, opt_use_fov) == false) {
       return EXIT_FAILURE;
     }
 
@@ -578,8 +594,12 @@ int main(int argc, const char **argv)
     std::cout << " Simulation " << std::endl;
     std::cout << " task : servo 4 points " << std::endl;
     std::cout << " constraints:" << std::endl;
-    std::cout << "\t- Field of view" << std::endl;
-    std::cout << "\t- Singularity avoidance" << std::endl;
+    if (opt_use_fov) {
+      std::cout << "\t- Field of view" << std::endl;
+    }
+    if (opt_use_manipulability) {
+      std::cout << "\t- Singularity avoidance" << std::endl;
+    }
     std::cout << "\t- Joints limits avoidance" << std::endl;
     std::cout << "----------------------------------------------" << std::endl;
     std::cout << std::endl;
@@ -727,8 +747,12 @@ int main(int argc, const char **argv)
         space, img_res, wimg * Eigen::MatrixXd::Identity(2 * NB_POINTS, 2 * NB_POINTS)));
       if (with_u)
         cs.addCost(QuadraticResidualCostTpl<Scalar>(space, ctrl_res, R)); // <-- replaces QuadraticControlCost
-      cs.addCost(FovBarrierCost(space, fov_soft, barrier_mu, barrier_delta, fov_h_on));
-      cs.addCost(ManipBarrierCost(space, manip_soft, manip_mu, manip_delta, manip_h_on, /*scale=*/w_soft));
+      if (opt_use_fov) {
+        cs.addCost(FovBarrierCost(space, fov_soft, barrier_mu, barrier_delta, fov_h_on));
+      }
+      if (opt_use_manipulability) {
+        cs.addCost(ManipBarrierCost(space, manip_soft, manip_mu, manip_delta, manip_h_on, /*scale=*/w_soft));
+      }
       return cs;
       };
 
@@ -741,14 +765,22 @@ int main(int argc, const char **argv)
       StageModelTpl<Scalar> stage(make_cost(w_img, true), dyn);
       stage.addConstraint(q_limits, NegativeOrthantTpl<Scalar>());
       stage.addConstraint(u_box, NegativeOrthantTpl<Scalar>());
-      stage.addConstraint(manip, NegativeOrthantTpl<Scalar>());
-      stage.addConstraint(fov, NegativeOrthantTpl<Scalar>());
+      if (opt_use_manipulability) {
+        stage.addConstraint(manip, NegativeOrthantTpl<Scalar>());
+      }
+      if (opt_use_fov) {
+        stage.addConstraint(fov, NegativeOrthantTpl<Scalar>());
+      }
       problem.addStage(stage);
     }
     // Also constrain the terminal state
     problem.addTerminalConstraint(q_limits, NegativeOrthantTpl<Scalar>());
-    problem.addTerminalConstraint(manip, NegativeOrthantTpl<Scalar>());
-    problem.addTerminalConstraint(fov, NegativeOrthantTpl<Scalar>());
+    if (opt_use_manipulability) {
+      problem.addTerminalConstraint(manip, NegativeOrthantTpl<Scalar>());
+    }
+    if (opt_use_fov) {
+      problem.addTerminalConstraint(fov, NegativeOrthantTpl<Scalar>());
+    }
 
     // ---- Solver ----------------------------------------------------------------
     const double tol = 1e-4, mu_init = 1e-2;
