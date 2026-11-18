@@ -823,7 +823,7 @@ int main(int argc, const char **argv)
         vpDisplay::display(Iint);
         robot.getInternalView(Iint);
         for (const auto &ip: pd_ip) {
-          vpDisplay::displayCircle(Iint, ip, 5, vpColor::black, true);
+          vpDisplay::displayCircle(Iint, ip, 2, vpColor::black, true);
         }
         vpDisplay::flush(Iint);
       }
