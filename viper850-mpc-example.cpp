@@ -796,7 +796,12 @@ int main(int argc, const char **argv)
     VectorXs q = q0;
     vpColVector q_visp = q0_visp;
     pin::Data tmp(model);
-    while (k++ < 500) {
+    double s_sstart_inf_pix = std::numeric_limits<double>::max();
+    const double thresh_error_pix = 0.5;
+    const double max_iter = 2000; // 2000
+    const unsigned int warm_up_iters = 100;
+    while ((s_sstart_inf_pix > thresh_error_pix) && (k < max_iter)) {
+      ++k;
       vpColVector qdot;
 
       // Get the Time at the beginning of the loop
@@ -859,7 +864,7 @@ int main(int argc, const char **argv)
       xs[horizon] = res.xs[horizon];
 
       // send the camera velocity to the controller after MPC warm-up
-      if (k > 10) {
+      if (k > warm_up_iters) {
         robot.setVelocity(vpRobot::ARTICULAR_FRAME, qdot);
       }
 
@@ -878,14 +883,7 @@ int main(int argc, const char **argv)
         const double s_sstar_inf_tmp = std::max({ std::abs(pc.x() / Z - target->s_ref[i][0]), std::abs(pc.y() / Z - target->s_ref[i][1]) });
         s_sstart_inf = std::max(s_sstar_inf_tmp, s_sstart_inf);
       }
-
-      vpHomogeneousMatrix fMc;
-      robot.get_fMc(q_visp, fMc);                       // ViSP: base -> camera
-
-      const Eigen::Matrix4d M = tmp.oMf[cam_fid].toHomogeneousMatrix();
-      double d = 0;
-      for (int r = 0; r < 4; ++r)
-        for (int c = 0; c < 4; ++c) d = std::max(d, std::abs(M(r, c) - fMc[r][c]));
+      s_sstart_inf_pix = s_sstart_inf * fx;
 
       static bool once = true;
       if (once) {
@@ -894,8 +892,8 @@ int main(int argc, const char **argv)
           << ";qdot_0" << ";qdot_1"<< ";qdot_2"<< ";qdot_3"<< ";qdot_4"<< ";qdot_5"
           << ";w"
           << ";fov_slack"
-          << ";||s - star||_{inf}"
-          << ";camera pose diff"
+          << ";||s - sstar||_{inf}(m)"
+          << ";||s - sstar||_{inf}(pix)"
           << "\n";
         once = false;
       }
@@ -910,7 +908,7 @@ int main(int argc, const char **argv)
         << ";" << manip.manipulability(q)
         << ";" << fov_slack
         << ";" << s_sstart_inf
-        << ";" << d
+        << ";" << s_sstart_inf_pix
         << "\n";
 
       // The main loop has a duration of 10 ms at minimum
@@ -920,12 +918,6 @@ int main(int argc, const char **argv)
     robot.setVelocity(vpRobot::ARTICULAR_FRAME, qdot);
 
     ///TODO: Display task information
-
-    std::cout << "Final robot position with respect to the object frame:\n";
-    // Get the current pose of the camera
-    cMo = robot.get_cMo();
-    cMo.print();
-
     auto debug_grads = [&](const VectorXs &q) {
       VectorXs u = VectorXs::Zero(nu);
 
@@ -963,12 +955,23 @@ int main(int argc, const char **argv)
     for (unsigned i = 0; i < NB_POINTS; ++i) {
       point[i].track(cMo);
       const double sx = point[i].get_x(), sy = point[i].get_y();
+      // value = s_model - s* => s_model = value + s*
       const double mx = img_data->value_[2*i]   + target->s_ref[i].x();
       const double my = img_data->value_[2*i+1] + target->s_ref[i].y();
       max_diff = std::max({ max_diff, std::abs(mx - sx), std::abs(my - sy) });
     }
     std::cout << "|s_model - s_measured|_inf = " << max_diff
       << "  |e_model|_inf = " << img_data->value_.cwiseAbs().maxCoeff() << "\n";
+
+    std::cout << "Final robot position with respect to the object frame:\n";
+    // Get the current pose of the camera
+    cMo = robot.get_cMo();
+    cMo.print();
+    std::cout << "\nFinal error cdMc:\n";
+    // Get the current pose of the camera
+    vpHomogeneousMatrix cdMc = cdMo * cMo.inverse();
+    cdMc.print();
+    std::cout << std::endl;
 
     if (opt_display && opt_click_allowed) {
       // suppressed for automate test
