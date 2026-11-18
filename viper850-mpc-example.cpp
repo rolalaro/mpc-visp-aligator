@@ -644,7 +644,7 @@ int main(int argc, const char **argv)
     const double w_soft = 2.5 * w_min;    // barrier starts to act around here
     const double w_img = 2e2;   // image error weight
     const double w_img_term = 4e2;
-    const double w_u = 1.0;    // velocity regularization
+    const double w_u = 5.0;    // velocity regularization
     const double barrier_mu = 5e-2;     // barrier strength
     const double barrier_delta = 0.03;  // relaxation threshold (units of g: meters)
     const double manip_mu = 5e-2;
