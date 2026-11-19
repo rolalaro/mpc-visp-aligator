@@ -88,6 +88,7 @@
 #include <aligator/modelling/linear-function.hpp>
 #include <aligator/modelling/control-box-function.hpp>
 #include <aligator/solvers/proxddp/solver-proxddp.hpp>
+#include <aligator/solvers/fddp/solver-fddp.hpp>
 #include <aligator/modelling/constraints/negative-orthant.hpp>
 
 #include <pinocchio/parsers/urdf.hpp>
@@ -434,14 +435,14 @@ using FovBarrierCost = RelaxedBarrierCost<FieldOfViewConstraint>;
 using ManipBarrierCost = RelaxedBarrierCost<ManipulabilityConstraint>;
 
 // List of allowed command line options
-#define GETOPTARGS "cdhu:f:mv"
+#define GETOPTARGS "cdhu:f:mvl"
 
 #ifdef ENABLE_VISP_NAMESPACE
 using namespace VISP_NAMESPACE_NAME;
 #endif
 
 void usage(const char *name, const char *badparam);
-bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name, bool &use_manipulability, bool &use_fov);
+bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name, bool &use_manipulability, bool &use_fov, bool &use_limits);
 
 /*!
 
@@ -478,6 +479,9 @@ OPTIONS:                                               Default\n\
   -v \n\
      Turn off the field of view constraints and cost.\n\
                   \n\
+  -l \n\
+     Turn off the joints velocity and position limits constraints.\n\
+                  \n\
   -c\n\
      Disable the mouse click. Useful to automate the \n\
      execution of this program without human intervention.\n\
@@ -501,13 +505,14 @@ Set the program options.
   \param click_allowed : Click activation.
   \param urdf_path : Path towards the URDF of the robot.
   \param camera_frame_name : Name of the camera frame in the URDF.
-  \param use_manipulability : Activate manipulability constraints and cost.
-  \param use_fov : Activate field of view constraints and cost.
+  \param use_manipulability : Dectivate manipulability constraints and cost.
+  \param use_fov : Dectivate field of view constraints and cost.
+  \param use_limits : Dectivate limits constraints and cost.
 
   \return false if the program has to be stopped, true otherwise.
 
 */
-bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name, bool &use_manipulability, bool &use_fov)
+bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name, bool &use_manipulability, bool &use_fov, bool &use_limits)
 {
   const char *optarg_;
   int c;
@@ -525,6 +530,9 @@ bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display,
       break;
     case 'v':
       use_fov = false;
+      break;
+    case 'l':
+      use_limits = false;
       break;
     case 'u':
       urdf_path = std::string(optarg_);
@@ -565,11 +573,12 @@ int main(int argc, const char **argv)
     bool opt_display = true;
     bool opt_use_manipulability = true;
     bool opt_use_fov = true;
+    bool opt_use_limits = true;
     std::string opt_urdf_path = vpIoTools::createFilePath("urdf", "viper850_sim.urdf");
     std::string opt_camera_frame_name = std::string("camera_link");
 
     // Read the command line options
-    if (getOptions(argc, argv, opt_click_allowed, opt_display, opt_urdf_path, opt_camera_frame_name, opt_use_manipulability, opt_use_fov) == false) {
+    if (getOptions(argc, argv, opt_click_allowed, opt_display, opt_urdf_path, opt_camera_frame_name, opt_use_manipulability, opt_use_fov, opt_use_limits) == false) {
       return EXIT_FAILURE;
     }
 
@@ -600,7 +609,12 @@ int main(int argc, const char **argv)
     if (opt_use_manipulability) {
       std::cout << "\t- Singularity avoidance" << std::endl;
     }
-    std::cout << "\t- Joints limits avoidance" << std::endl;
+    if (opt_use_limits) {
+      std::cout << "\t- Joints limits avoidance" << std::endl;
+    }
+    if ((!opt_use_limits) && (!opt_use_fov) && (!opt_use_manipulability)) {
+      std::cout << "\tNONE" << std::endl;
+    }
     std::cout << "----------------------------------------------" << std::endl;
     std::cout << std::endl;
 
@@ -763,8 +777,10 @@ int main(int argc, const char **argv)
 
     for (int t = 0; t < horizon; ++t) {
       StageModelTpl<Scalar> stage(make_cost(w_img, true), dyn);
-      stage.addConstraint(q_limits, NegativeOrthantTpl<Scalar>());
-      stage.addConstraint(u_box, NegativeOrthantTpl<Scalar>());
+      if (opt_use_limits) {
+        stage.addConstraint(q_limits, NegativeOrthantTpl<Scalar>());
+        stage.addConstraint(u_box, NegativeOrthantTpl<Scalar>());
+      }
       if (opt_use_manipulability) {
         stage.addConstraint(manip, NegativeOrthantTpl<Scalar>());
       }
@@ -774,7 +790,9 @@ int main(int argc, const char **argv)
       problem.addStage(stage);
     }
     // Also constrain the terminal state
-    problem.addTerminalConstraint(q_limits, NegativeOrthantTpl<Scalar>());
+    if (opt_use_limits) {
+      problem.addTerminalConstraint(q_limits, NegativeOrthantTpl<Scalar>());
+    }
     if (opt_use_manipulability) {
       problem.addTerminalConstraint(manip, NegativeOrthantTpl<Scalar>());
     }
