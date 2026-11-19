@@ -738,7 +738,7 @@ int main(int argc, const char **argv)
     LinearFunctionTpl<Scalar> q_limits(Aq, MatrixXs::Zero(2 * nq, nu), cq);
 
     // velocity box
-    VectorXs umax = model.velocityLimit;
+    VectorXs umax = model.upperVelocityLimit;
     ControlBoxFunctionTpl<Scalar> u_box(nq, -umax, umax);
 
 
