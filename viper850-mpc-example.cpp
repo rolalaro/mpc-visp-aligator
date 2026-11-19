@@ -801,9 +801,11 @@ int main(int argc, const char **argv)
     }
 
     // ---- Solver ----------------------------------------------------------------
-    const double tol = 1e-4, mu_init = 1e-2;
-    const std::size_t max_iters = 20;
-    SolverProxDDPTpl<Scalar> solver(tol, mu_init, max_iters, QUIET);
+    const double tol = 1e-2, mu_init = 1e-2;
+    const std::size_t max_iters = 100; 
+    const double reg_init = 1e-6;
+    SolverProxDDPTpl<Scalar> solver(tol, mu_init, max_iters, VERBOSE);
+    solver.reg_init = reg_init;
     solver.setup(problem);
 
     std::vector<VectorXs> xs(horizon + 1, q0);
