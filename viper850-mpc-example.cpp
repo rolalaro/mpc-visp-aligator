@@ -819,7 +819,7 @@ int main(int argc, const char **argv)
     double s_sstart_inf_pix = std::numeric_limits<double>::max();
     const double thresh_error_pix = 0.5;
     const double max_iter = 2000; // 2000
-    const unsigned int warm_up_iters = 100;
+    const unsigned int warm_up_iters = 0;
     while ((s_sstart_inf_pix > thresh_error_pix) && (k < max_iter)) {
       ++k;
       vpColVector qdot;
@@ -884,7 +884,7 @@ int main(int argc, const char **argv)
       xs[horizon] = res.xs[horizon];
 
       // send the camera velocity to the controller after MPC warm-up
-      if (k > warm_up_iters) {
+      if (k >= warm_up_iters) {
         robot.setVelocity(vpRobot::ARTICULAR_FRAME, qdot);
       }
 
