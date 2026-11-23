@@ -327,6 +327,54 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// Cost function: 1/2 * w * ||r(x,u)||^2
+// ---------------------------------------------------------------------------
+template <class Res>
+class WeightedResidualCost : public CostAbstractTpl<Scalar>
+{
+public:
+  using Base = CostAbstractTpl<Scalar>;
+
+  WeightedResidualCost(const xyz::polymorphic<Manifold> &space, Res &res, double &weight)
+    : Base(space, res.nu), res_(res), weight_(weight)
+  {}
+
+  void evaluate(const ConstVectorRef &x, const ConstVectorRef &u,
+                CostData &data) const override
+  {
+    auto d = res_.createData();
+    res_.evaluate(x, u, *d);
+    data.value_ = 0.5 * weight_ * d->value_.squaredNorm();
+  }
+
+  void computeGradients(const ConstVectorRef &x, const ConstVectorRef &u,
+                        CostData &data) const override
+  {
+    auto d = res_.createData();
+    res_.evaluate(x, u, *d);
+    res_.computeJacobians(x, u, *d);
+    data.Lx_.noalias() = weight_ * d->Jx_.transpose() * d->value_;
+    data.Lu_.noalias() = weight_ * d->Ju_.transpose() * d->value_;
+  }
+
+  void computeHessians(const ConstVectorRef &x, const ConstVectorRef &u,
+                        CostData &data) const override
+  {
+    auto d = res_.createData();
+    res_.evaluate(x, u, *d);
+    res_.computeJacobians(x, u, *d);
+    data.Lxx_.noalias() = weight_ * d->Jx_.transpose() * d->Jx_;
+    data.Lxu_.noalias() = weight_ * d->Jx_.transpose() * d->Ju_;
+    data.Luu_.noalias() = weight_ * d->Ju_.transpose() * d->Ju_;
+    // Note: we ignore the second-order term (Gauß-Newton approximation)
+  }
+
+private:
+  Res &res_;
+  double &weight_;
+};
+
+// ---------------------------------------------------------------------------
 // Relaxed-log-barrier cost on any constraint function g(x,u) <= 0.
 //   h_i = -g_i / scale   (h_i > 0  <=>  constraint satisfied)
 //   B(h) = μ ( h/h_on − 1 − log(h/h_on) )   for delta < h < h_on     (B = B' = 0 at h_on)
@@ -393,7 +441,7 @@ private:
   {
     const bool same = valid_ && x_last_.size() == x.size() &&
       x_last_ == x && u_last_ == u;
-    if (same && (jac_ok_ || !need_jac)) return;
+    // if (same && (jac_ok_ || !need_jac)) return;
     f_.evaluate(x, u, *fdata_);
     if (need_jac) f_.computeJacobians(x, u, *fdata_);
     x_last_ = x; u_last_ = u;
@@ -651,14 +699,18 @@ int main(int argc, const char **argv)
     const pin::FrameIndex cam_fid = model.getFrameId(opt_camera_frame_name);
     const int nq = model.nq, nu = model.nv;
     const double dt = 0.01;   // 50 Hz MPC
-    const int horizon = 25;   // 0.5 s lookahead
+    const int horizon = 25;   // 0.25 s lookahead
 
     // ---- Parameters ---------------------------------------------------------
     const double w_min = 0.02;  // minimum manipulability (tune! must be < initial w)
     const double w_soft = 2.5 * w_min;    // barrier starts to act around here
-    const double w_img = 2e2;   // image error weight
-    const double w_img_term = 4e2;
-    const double w_u = 5.0;    // velocity regularization
+    const double w_img_max = 1e4;     // Maxime image error weight
+    const double w_img_min = 5e2; // Minimal image error weight
+    double w_img = w_img_min;         // image error weight
+    double w_img_term = 2e4;    // terminal image error weight
+    const double w_u_min = 1.5; // Minimal velocity regularization
+    const double w_u_max = 10.; // Maximal velocity regularization
+    double w_u = w_u_max;           // velocity regularization
     const double barrier_mu = 5e-2;     // barrier strength
     const double barrier_delta = 0.03;  // relaxation threshold (units of g: meters)
     const double manip_mu = 5e-2;
@@ -755,12 +807,12 @@ int main(int argc, const char **argv)
     ControlResidual ctrl_res(nq, nu);
     const MatrixXs R = w_u * MatrixXs::Identity(nu, nu);
 
-    auto make_cost = [&](double wimg, bool with_u) {
+    auto make_cost = [&](bool with_u) {
       CostStackTpl<Scalar> cs(space, nu);
-      cs.addCost(QuadraticResidualCostTpl<Scalar>(
-        space, img_res, wimg * Eigen::MatrixXd::Identity(2 * NB_POINTS, 2 * NB_POINTS)));
+      cs.addCost(WeightedResidualCost<ImagePointResidual>(
+        space, img_res, w_img));
       if (with_u)
-        cs.addCost(QuadraticResidualCostTpl<Scalar>(space, ctrl_res, R)); // <-- replaces QuadraticControlCost
+        cs.addCost(WeightedResidualCost<ControlResidual>(space, ctrl_res, w_u));
       if (opt_use_fov) {
         cs.addCost(FovBarrierCost(space, fov_soft, barrier_mu, barrier_delta, fov_h_on));
       }
@@ -773,10 +825,10 @@ int main(int argc, const char **argv)
     // ---- Build the OCP --------------------------------------------------------
     using aligator::NegativeOrthantTpl;
     std::vector<xyz::polymorphic<StageModelTpl<Scalar>>> dummy; // (not needed)
-    TrajOptProblemTpl<Scalar> problem(q0, nu, space, make_cost(w_img_term, false));
+    TrajOptProblemTpl<Scalar> problem(q0, nu, space, WeightedResidualCost<ImagePointResidual>(space, img_res, w_img_term));
 
     for (int t = 0; t < horizon; ++t) {
-      StageModelTpl<Scalar> stage(make_cost(w_img, true), dyn);
+      StageModelTpl<Scalar> stage(make_cost(true), dyn);
       if (opt_use_limits) {
         stage.addConstraint(q_limits, NegativeOrthantTpl<Scalar>());
         stage.addConstraint(u_box, NegativeOrthantTpl<Scalar>());
@@ -801,10 +853,10 @@ int main(int argc, const char **argv)
     }
 
     // ---- Solver ----------------------------------------------------------------
-    const double tol = 1e-2, mu_init = 1e-2;
-    const std::size_t max_iters = 100; 
+    const double tol = 1e-6, mu_init = 1e-2;
+    const std::size_t max_iters = 100;
     const double reg_init = 1e-6;
-    SolverProxDDPTpl<Scalar> solver(tol, mu_init, max_iters, VERBOSE);
+    SolverProxDDPTpl<Scalar> solver(tol, mu_init, max_iters, QUIET);
     solver.reg_init = reg_init;
     solver.setup(problem);
 
@@ -818,7 +870,7 @@ int main(int argc, const char **argv)
     pin::Data tmp(model);
     double s_sstart_inf_pix = std::numeric_limits<double>::max();
     const double thresh_error_pix = 0.5;
-    const double max_iter = 2000; // 2000
+    const double max_iter = 20000; // 2000
     const unsigned int warm_up_iters = 0;
     while ((s_sstart_inf_pix > thresh_error_pix) && (k < max_iter)) {
       ++k;
@@ -866,13 +918,26 @@ int main(int argc, const char **argv)
         visp::visp2eigen(wP_3d, target->p_w[i]);
       }
 
+      // Adaptation logic: adjust weights based on current error (s_sstart_inf_pix from previous iter)
+      // High error -> Low w_img, High w_u (Smooth start)
+      // Low error -> High w_img, Low w_u (Precise convergence)
+      if (k > 1) {
+        w_img = std::max(w_img_min, w_img_max - 160.0 * s_sstart_inf_pix);
+        w_u = std::min(w_u_max, w_u_min + 0.4 * s_sstart_inf_pix);
+      }
+
       // 2) solve, warm-started
       xs[0] = q;
       auto t0 = std::chrono::steady_clock::now();
       solver.run(problem, xs, us);
       auto t1 = std::chrono::steady_clock::now();
       const auto &res = solver.results_;
-      const VectorXs u0 = res.us[0];
+      VectorXs u0 = res.us[0];
+      // if (!res.conv) {
+      //   // The solver did not manage to find a solution to the problem
+      //   // For safety, stopping the robot
+      //   u0 = VectorXs::Zero(nu);
+      // }
 
       // 3) apply first control (here: integrate the simulated robot)
       visp::eigen2visp(u0, qdot);
@@ -912,6 +977,8 @@ int main(int argc, const char **argv)
           << ";qdot_0" << ";qdot_1"<< ";qdot_2"<< ";qdot_3"<< ";qdot_4"<< ";qdot_5"
           << ";w"
           << ";fov_slack"
+          << ";w_img"
+          << ";w_u"
           << ";||s - sstar||_{inf}(m)"
           << ";||s - sstar||_{inf}(pix)"
           << "\n";
@@ -927,6 +994,8 @@ int main(int argc, const char **argv)
         << ";" << qdot_as_str
         << ";" << manip.manipulability(q)
         << ";" << fov_slack
+        << ";" << w_img
+        << ";" << w_u
         << ";" << s_sstart_inf
         << ";" << s_sstart_inf_pix
         << "\n";
