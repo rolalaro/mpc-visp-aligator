@@ -182,6 +182,58 @@ private:
   mutable MatrixXs J_;
 };
 
+class PoseResidual : public StageFunction
+{
+public:
+  using Base = StageFunction;
+  using Data = StageFunctionData;
+
+  PoseResidual(const pin::Model &model, pin::FrameIndex cam_frame,
+               const pin::SE3 &target_pose, int nu)
+    : Base(model.nq, nu, 6), model_(model), pdata_(model), fid_(cam_frame),
+    cd_M_f_(target_pose), J_(6, model.nv)
+  {
+    J_.setZero();
+  }
+
+  void evaluate(const ConstVectorRef &x, const ConstVectorRef &,
+                Data &data) const override
+  {
+    pin::forwardKinematics(model_, pdata_, x.head(model_.nq));
+    pin::updateFramePlacement(model_, pdata_, fid_);
+    const auto &fMc = pdata_.oMf[fid_];
+
+     // Compute the relative pose: C_rel = C_curr^-1 * C_des
+    // This is the pose of the target relative to the current camera.
+    pin::SE3 err = cd_M_f_ * fMc;
+
+    // Use the log map to get the 6D twist (translation and rotation vector)
+    data.value_ = pin::log6(err).toVector();
+  }
+
+  void computeJacobians(const ConstVectorRef &x, const ConstVectorRef &,
+                        Data &data) const override
+  {
+    const Eigen::VectorXd q = x.head(model_.nq);
+    pin::computeJointJacobians(model_, pdata_, q);
+    pin::updateFramePlacement(model_, pdata_, fid_);
+
+    // For the residual log(C_curr^-1 * C_des), the Jacobian is exactly
+    // the local frame Jacobian.
+    pin::getFrameJacobian(model_, pdata_, fid_, pin::LOCAL, J_);
+
+    data.Jx_ = J_;
+    data.Ju_.setZero();
+  }
+
+private:
+  const pin::Model &model_;
+  mutable pin::Data pdata_;
+  pin::FrameIndex fid_;
+  pin::SE3 cd_M_f_;
+  mutable MatrixXs J_;
+};
+
 // ---------------------------------------------------------------------------
 // Control residual r(x,u) = u  (used to build the cost 1/2 u^T R u)
 // ---------------------------------------------------------------------------
@@ -702,29 +754,36 @@ int main(int argc, const char **argv)
     const int horizon = 25;   // 0.25 s lookahead
 
     // ---- Parameters ---------------------------------------------------------
-    const double w_min = 0.02;  // minimum manipulability (tune! must be < initial w)
-    const double w_soft = 2.5 * w_min;    // barrier starts to act around here
-    const double w_img_max = 1e4;     // Maxime image error weight
+
+    // // ++++ For Cost terms ++++
+    const double w_img_max = 5e3;     // Maxime image error weight
     const double w_img_min = 5e2; // Minimal image error weight
-    double w_img = w_img_min;         // image error weight
-    double w_img_term = 2e4;    // terminal image error weight
-    const double w_u_min = 1.5; // Minimal velocity regularization
+    double w_img = w_img_min;         // Current image error weight
+    double w_img_term = 1e4;    // terminal image error weight
+    const double w_pose_max = 5e0; // Maximum pose error weight
+    const double w_pose_min = 5e0; // Minimum pose error weight
+    double w_pose = 5e0; // Current pose error weight
+    const double w_u_min = 2.5; // Minimal velocity regularization
     const double w_u_max = 10.; // Maximal velocity regularization
-    double w_u = w_u_max;           // velocity regularization
+    double w_u = w_u_max;           // Current velocity regularization
+
+    // // ++++ For Constraints terms ++++
     const double barrier_mu = 5e-2;     // barrier strength
     const double barrier_delta = 0.03;  // relaxation threshold (units of g: meters)
+    const double manip_min = 0.03;  // minimum manipulability (tune! must be < initial w)
+    const double manip_soft_thresh = 1.5 * manip_min;    // barrier starts to act around here
     const double manip_mu = 5e-2;
-    const double manip_delta = 0.05;       // normalized: relax when w < 1.2 * w_soft
-    const double manip_h_on = 0.2;
+    const double manip_delta = 0.04;       // normalized: relax when w < 1.2 * manip_soft_thresh
+    const double manip_h_on = 0.05;
+    const double fov_margin = 0.9;  // keep the point within 90% of the half-image
+    const double fov_h_on = 1e-3;
 
     // Camera intrinsics
     const double fx = cam.get_px(), fy = cam.get_py();
     const double img_w = Iint.getCols(), img_h = Iint.getRows();
-    const double fov_margin = 0.9;  // keep the point within 90% of the half-image
     const double x_max = fov_margin * (img_w / 2.0) / fx;
     const double y_max = fov_margin * (img_h / 2.0) / fy;
     const double z_min = 0.05;      // minimum distance in front of the camera [m]
-    const double fov_h_on = 1e-3;
 
     if (opt_display) {
       // Get the internal view
@@ -795,8 +854,8 @@ int main(int argc, const char **argv)
     ControlBoxFunctionTpl<Scalar> u_box(nq, -umax, umax);
 
 
-    ManipulabilityConstraint manip(model, cam_fid, w_min, nu);        // hard
-    ManipulabilityConstraint manip_soft(model, cam_fid, w_soft, nu);  // for barrier
+    ManipulabilityConstraint manip(model, cam_fid, manip_min, nu);        // hard
+    ManipulabilityConstraint manip_soft(model, cam_fid, manip_soft_thresh, nu);  // for barrier
     FieldOfViewConstraint fov(model, cam_fid, target, x_max, y_max, z_min, nu);
     const double barrier_margin = 0.7;
     FieldOfViewConstraint fov_soft(model, cam_fid, target,
@@ -805,6 +864,9 @@ int main(int argc, const char **argv)
 
     // ---- Cost ----------------------------------------------------------------
     ImagePointResidual img_res(model, cam_fid, target, nu);
+    Eigen::Matrix4d cdMf_eigen;
+    visp::visp2eigen(cdMo * f_M_o.inverse(), cdMf_eigen);
+    PoseResidual pose_res(model, cam_fid, pin::SE3(cdMf_eigen), nu);
     ControlResidual ctrl_res(nq, nu);
     const MatrixXs R = w_u * MatrixXs::Identity(nu, nu);
 
@@ -812,13 +874,14 @@ int main(int argc, const char **argv)
       CostStackTpl<Scalar> cs(space, nu);
       cs.addCost(WeightedResidualCost<ImagePointResidual>(
         space, img_res, w_img));
+      cs.addCost(WeightedResidualCost<PoseResidual>(space, pose_res, w_pose));
       if (with_u)
         cs.addCost(WeightedResidualCost<ControlResidual>(space, ctrl_res, w_u));
       if (opt_use_fov) {
         cs.addCost(FovBarrierCost(space, fov_soft, barrier_mu, barrier_delta, fov_h_on));
       }
       if (opt_use_manipulability) {
-        cs.addCost(ManipBarrierCost(space, manip_soft, manip_mu, manip_delta, manip_h_on, /*scale=*/w_soft));
+        cs.addCost(ManipBarrierCost(space, manip_soft, manip_mu, manip_delta, manip_h_on, /*scale=*/manip_soft_thresh));
       }
       return cs;
       };
@@ -1021,7 +1084,7 @@ int main(int argc, const char **argv)
       fb.evaluate(q, u, *df);
       fb.computeGradients(q, u, *df);
 
-      ManipBarrierCost mb(space, manip_soft, manip_mu, manip_delta, manip_h_on, w_soft);
+      ManipBarrierCost mb(space, manip_soft, manip_mu, manip_delta, manip_h_on, manip_soft_thresh);
       auto dm = mb.createData();
       mb.evaluate(q, u, *dm);
       mb.computeGradients(q, u, *dm);
