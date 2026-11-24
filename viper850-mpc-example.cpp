@@ -760,11 +760,11 @@ int main(int argc, const char **argv)
     const double w_img_min = 5e2; // Minimal image error weight
     double w_img = w_img_min;         // Current image error weight
     double w_img_term = 1e4;    // terminal image error weight
-    const double w_pose_max = 5e0; // Maximum pose error weight
-    const double w_pose_min = 5e0; // Minimum pose error weight
+    const double w_pose_max = 5e1; // Maximum pose error weight
+    const double w_pose_min = 5e1; // Minimum pose error weight
     double w_pose = 5e0; // Current pose error weight
     const double w_u_min = 2.5; // Minimal velocity regularization
-    const double w_u_max = 10.; // Maximal velocity regularization
+    const double w_u_max = 500.; // Maximal velocity regularization
     double w_u = w_u_max;           // Current velocity regularization
 
     // // ++++ For Constraints terms ++++
@@ -936,7 +936,6 @@ int main(int argc, const char **argv)
     const double thresh_error_pix = 0.005;
     const double max_iter = 20000; // 2000
     const unsigned int warm_up_iters = 0;
-    bool has_previously_converged = false;
     while ((s_sstart_inf_pix > thresh_error_pix) && (k < max_iter)) {
       ++k;
       vpColVector qdot;
@@ -991,28 +990,31 @@ int main(int argc, const char **argv)
         static const double one_minus_alpha = 1. - alpha;
         double target_w_img = std::max(w_img_min, w_img_max - 160.0 * s_sstart_inf_pix);
         w_img = alpha * w_img + one_minus_alpha * target_w_img;
-        double target_w_u = std::min(w_u_max, w_u_min + 0.4 * s_sstart_inf_pix);
+        double target_w_u = std::min(w_u_max, w_u_min + 5.0 * s_sstart_inf_pix);
         w_u = alpha * w_u + one_minus_alpha * target_w_u;
       }
 
       // 2) solve, warm-started
-      if (has_previously_converged && (s_sstart_inf_pix < 5.)) {
-        solver.target_tol_ = 1e-6;
-      }
-      else {
-        solver.target_tol_ = tol;
-      }
       xs[0] = q;
       auto t0 = std::chrono::steady_clock::now();
       solver.run(problem, xs, us);
       auto t1 = std::chrono::steady_clock::now();
       const auto &res = solver.results_;
       VectorXs u0 = res.us[0];
-      // if (!res.conv) {
-      //   // The solver did not manage to find a solution to the problem
-      //   // For safety, stopping the robot
-      //   u0 = VectorXs::Zero(nu);
-      // }
+
+      // Filter and limit the control input to avoid jitter, especially during non-convergence
+      static VectorXs u_filtered = VectorXs::Zero(nu);
+      double alpha_filter = 0.2; // base filter coefficient (1.0 = no filter)
+      if (!res.conv) {
+        alpha_filter = 0.05; // Stronger filter when not converged
+      }
+      u0 = alpha_filter * u0 + (1.0 - alpha_filter) * u_filtered;
+      u_filtered = u0;
+
+      // Safety clip to robot limits
+      for (int i = 0; i < nu; ++i) {
+        u0[i] = std::max(-umax[i], std::min(umax[i], u0[i]));
+      }
 
       // 3) apply first control (here: integrate the simulated robot)
       visp::eigen2visp(u0, qdot);
