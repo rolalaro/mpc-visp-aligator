@@ -917,7 +917,7 @@ int main(int argc, const char **argv)
     }
 
     // ---- Solver ----------------------------------------------------------------
-    const double tol = 1e-6, mu_init = 1e-2;
+    const double tol = 1e-3, mu_init = 1e-2;
     const std::size_t max_iters = 100;
     const double reg_init = 1e-6;
     SolverProxDDPTpl<Scalar> solver(tol, mu_init, max_iters, QUIET);
@@ -933,9 +933,10 @@ int main(int argc, const char **argv)
     vpColVector q_visp = q0_visp;
     pin::Data tmp(model);
     double s_sstart_inf_pix = std::numeric_limits<double>::max();
-    const double thresh_error_pix = 0.5;
+    const double thresh_error_pix = 0.005;
     const double max_iter = 20000; // 2000
     const unsigned int warm_up_iters = 0;
+    bool has_previously_converged = false;
     while ((s_sstart_inf_pix > thresh_error_pix) && (k < max_iter)) {
       ++k;
       vpColVector qdot;
@@ -986,11 +987,21 @@ int main(int argc, const char **argv)
       // High error -> Low w_img, High w_u (Smooth start)
       // Low error -> High w_img, Low w_u (Precise convergence)
       if (k > 1) {
-        w_img = std::max(w_img_min, w_img_max - 160.0 * s_sstart_inf_pix);
-        w_u = std::min(w_u_max, w_u_min + 0.4 * s_sstart_inf_pix);
+        static const double alpha = 0.95;
+        static const double one_minus_alpha = 1. - alpha;
+        double target_w_img = std::max(w_img_min, w_img_max - 160.0 * s_sstart_inf_pix);
+        w_img = alpha * w_img + one_minus_alpha * target_w_img;
+        double target_w_u = std::min(w_u_max, w_u_min + 0.4 * s_sstart_inf_pix);
+        w_u = alpha * w_u + one_minus_alpha * target_w_u;
       }
 
       // 2) solve, warm-started
+      if (has_previously_converged && (s_sstart_inf_pix < 5.)) {
+        solver.target_tol_ = 1e-6;
+      }
+      else {
+        solver.target_tol_ = tol;
+      }
       xs[0] = q;
       auto t0 = std::chrono::steady_clock::now();
       solver.run(problem, xs, us);
