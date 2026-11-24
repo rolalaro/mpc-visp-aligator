@@ -115,7 +115,7 @@ using ConstVectorRef = Eigen::Ref<const VectorXs>;
 // ---------------------------------------------------------------------------
 struct VisualTarget
 {
-  std::vector<Eigen::Vector3d> p_w;   // N points, world frame
+  std::vector<Eigen::Vector3d> p_f;   // N points, world frame
   std::vector<Eigen::Vector2d> s_ref; // N desired normalized image points
 };
 
@@ -130,7 +130,7 @@ public:
 
   ImagePointResidual(const pin::Model &model, pin::FrameIndex cam_frame,
                      std::shared_ptr<VisualTarget> target, int nu)
-    : Base(model.nq, nu, 2 * static_cast<int>(target->p_w.size())), model_(model), pdata_(model), fid_(cam_frame),
+    : Base(model.nq, nu, 2 * static_cast<int>(target->p_f.size())), model_(model), pdata_(model), fid_(cam_frame),
     target_(std::move(target)), J_(6, model.nv)
   {
     J_.setZero();
@@ -142,8 +142,8 @@ public:
     pin::forwardKinematics(model_, pdata_, x.head(model_.nq));
     pin::updateFramePlacement(model_, pdata_, fid_);
     const auto &fMc = pdata_.oMf[fid_];
-    for (std::size_t i = 0; i < target_->p_w.size(); ++i) {
-      const Eigen::Vector3d pc = fMc.actInv(target_->p_w[i]);
+    for (std::size_t i = 0; i < target_->p_f.size(); ++i) {
+      const Eigen::Vector3d pc = fMc.actInv(target_->p_f[i]);
       const double Z = std::max(pc.z(), 1e-3);
       data.value_.segment<2>(2 * i) =
         Eigen::Vector2d(pc.x() / Z, pc.y() / Z) - target_->s_ref[i];
@@ -160,8 +160,8 @@ public:
     const auto &fMc = pdata_.oMf[fid_];              // now consistent with J_
     data.Jx_.setZero();
     data.Ju_.setZero();
-    for (std::size_t i = 0; i < target_->p_w.size(); ++i) {
-      const Eigen::Vector3d pc = fMc.actInv(target_->p_w[i]);
+    for (std::size_t i = 0; i < target_->p_f.size(); ++i) {
+      const Eigen::Vector3d pc = fMc.actInv(target_->p_f[i]);
       const double Z = std::max(pc.z(), 1e-3);
       Eigen::Matrix<double, 2, 3> Ls;
       Ls << 1, 0, -pc.x() / Z,
@@ -272,7 +272,7 @@ public:
   FieldOfViewConstraint(const pin::Model &model, pin::FrameIndex cam_frame,
                         std::shared_ptr<VisualTarget> target, double x_max,
                         double y_max, double z_min, int nu)
-    : Base(model.nq, nu, 5 * static_cast<int>(target->p_w.size())), model_(model), pdata_(model), fid_(cam_frame),
+    : Base(model.nq, nu, 5 * static_cast<int>(target->p_f.size())), model_(model), pdata_(model), fid_(cam_frame),
     target_(std::move(target)), J_(6, model.nv)
   {
     J_.setZero();
@@ -290,8 +290,8 @@ public:
     pin::forwardKinematics(model_, pdata_, x.head(model_.nq));
     pin::updateFramePlacement(model_, pdata_, fid_);
     const auto &fMc = pdata_.oMf[fid_];
-    for (std::size_t i = 0; i < target_->p_w.size(); ++i) {
-      const Eigen::Vector3d pc = fMc.actInv(target_->p_w[i]);
+    for (std::size_t i = 0; i < target_->p_f.size(); ++i) {
+      const Eigen::Vector3d pc = fMc.actInv(target_->p_f[i]);
       data.value_.segment<5>(5 * i) = C_ * pc + d_;
     }
   }
@@ -307,8 +307,8 @@ public:
     pin::updateFramePlacement(model_, pdata_, fid_); // refresh oMf for this q
     pin::getFrameJacobian(model_, pdata_, fid_, pin::LOCAL, J_);
     const auto &fMc = pdata_.oMf[fid_];              // now consistent with J_
-    for (std::size_t i = 0; i < target_->p_w.size(); ++i) {
-      const Eigen::Vector3d pc = fMc.actInv(target_->p_w[i]);
+    for (std::size_t i = 0; i < target_->p_f.size(); ++i) {
+      const Eigen::Vector3d pc = fMc.actInv(target_->p_f[i]);
       // d p_c / dq = -J_v + [p_c]_x J_w
       const MatrixXs dpc =
         -J_.topRows<3>() + pin::skew(pc) * J_.bottomRows<3>();
@@ -738,8 +738,9 @@ int main(int argc, const char **argv)
     robot.getPosition(vpRobot::ARTICULAR_FRAME, q0_visp);
     VectorXs q0;
     visp::visp2eigen(q0_visp, q0);
-    vpHomogeneousMatrix w_M_c = robot.get_fMc(q0_visp);
-    vpHomogeneousMatrix w_M_o = robot.get_fMo();
+    vpHomogeneousMatrix e_M_c;
+    robot.get_eMc(e_M_c);
+    vpHomogeneousMatrix f_M_o = robot.get_fMo();
 
     // ---- Visual target ------------------------------------
     // sets the point coordinates in the object frame
@@ -755,15 +756,15 @@ int main(int argc, const char **argv)
     std::vector<vpImagePoint> pd_ip(NB_POINTS);
 
     std::shared_ptr<VisualTarget> target = std::make_shared<VisualTarget>();
-    target->p_w.resize(NB_POINTS);
+    target->p_f.resize(NB_POINTS);
     target->s_ref.resize(NB_POINTS);
     for (unsigned int i = 0; i < NB_POINTS; ++i) {
-      point[i].track(w_M_o);
-      vpColVector wP = point[i].get_cP();
-      vpColVector wP_3d = wP.extract(0, 3);
-      Eigen::VectorXd wP_eigenX;
-      visp::visp2eigen(wP_3d, wP_eigenX);
-      target->p_w[i] = wP_eigenX;
+      point[i].track(f_M_o);
+      vpColVector fP = point[i].get_cP();
+      vpColVector fP_3d = fP.extract(0, 3);
+      Eigen::VectorXd fP_eigenX;
+      visp::visp2eigen(fP_3d, fP_eigenX);
+      target->p_f[i] = fP_eigenX;
 
       // Projection of the points
       point[i].track(cdMo);
@@ -909,13 +910,13 @@ int main(int argc, const char **argv)
       // 1) update the problem with current measurement
       problem.setInitState(q);          // older versions: problem.x0_init_ = q;
       // new points position
-      w_M_o = robot.get_fMo(); //NB: this is constant, so the points never move with regard to the base frame of the robot
+      f_M_o = robot.get_fMo(); //NB: this is constant, so the points never move with regard to the base frame of the robot
       for (unsigned int i = 0; i < NB_POINTS; i++) {
-        point[i].track(w_M_o);
+        point[i].track(f_M_o);
         // retrieve x,y and Z of the vpPoint structure
         vpColVector wP_visp = point[i].get_cP();
         vpColVector wP_3d = wP_visp.extract(0, 3);
-        visp::visp2eigen(wP_3d, target->p_w[i]);
+        visp::visp2eigen(wP_3d, target->p_f[i]);
       }
 
       // Adaptation logic: adjust weights based on current error (s_sstart_inf_pix from previous iter)
@@ -960,7 +961,7 @@ int main(int argc, const char **argv)
       double fov_slack = std::numeric_limits<double>::max();
       double s_sstart_inf = std::numeric_limits<double>::lowest();
       for (unsigned int i = 0; i < NB_POINTS; ++i) {
-        const Eigen::Vector3d pc = tmp.oMf[cam_fid].actInv(target->p_w[i]);
+        const Eigen::Vector3d pc = tmp.oMf[cam_fid].actInv(target->p_f[i]);
         const double Z = pc.z();
         const double fov_slack_tmp = std::min({ x_max - pc.x() / Z, x_max + pc.x() / Z,
           y_max - pc.y() / Z, y_max + pc.y() / Z });
