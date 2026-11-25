@@ -103,6 +103,46 @@ using ConstVectorRef = Eigen::Ref<const VectorXs>;
 using namespace VISP_NAMESPACE_NAME;
 #endif
 
+// ---------------------------------------------------------------------------
+// Compute the manipulability and its gradient
+// ---------------------------------------------------------------------------
+class Manipulability
+{
+public:
+  Manipulability(const pin::Model &model, pin::FrameIndex ee_frame)
+    : model_(model), pdata_(model), fid_(ee_frame),
+    J_(6, model.nv)
+  {
+    J_.setZero();
+  }
+
+  double manipulability(const VectorXs &q) const
+  {
+    pin::computeFrameJacobian(model_, pdata_, q, fid_, pin::LOCAL, J_);
+    const double det = (J_ * J_.transpose()).determinant();
+    return std::sqrt(std::max(det, 0.0));
+  }
+
+  MatrixXs gradient(const ConstVectorRef &q) const
+  {
+    const double eps = 1e-6;
+    MatrixXs grad(1, model_.nv);
+    for (int i = 0; i < model_.nv; ++i) {
+      VectorXs qp = q, qm = q;
+      qp[i] += eps;
+      qm[i] -= eps;
+      grad(0, i) = -(manipulability(qp) - manipulability(qm)) / (2 * eps);
+    }
+    return grad;
+  }
+
+private:
+  const pin::Model &model_;
+  mutable pin::Data pdata_;
+  pin::FrameIndex fid_;
+  mutable MatrixXs J_;
+};
+
 void usage(const char *name, const char *badparam);
 bool getOptions(int argc, const char **argv, bool &click_allowed, bool &display, std::string &urdf_path, std::string &camera_frame_name, bool &use_manipulability, bool &use_fov, bool &use_limits, double &gain);
 
@@ -341,8 +381,8 @@ int main(int argc, const char **argv)
     // ---- Initial state ------------------------------------
     vpColVector q0_visp;
     robot.getPosition(vpRobot::ARTICULAR_FRAME, q0_visp);
-    // VectorXs q0;
-    // visp::visp2eigen(q0_visp, q0);
+    VectorXs q0;
+    visp::visp2eigen(q0_visp, q0);
     vpHomogeneousMatrix e_M_c;
     robot.get_eMc(e_M_c);
     vpHomogeneousMatrix f_M_o = robot.get_fMo();
@@ -418,10 +458,19 @@ int main(int argc, const char **argv)
     std::cout << "Velocity limits:" << std::endl << "\tmin: " << q_dot_min.transpose() << "\n\tmax: " << q_dot_max.transpose() << std::endl;
 
     // generate a QP problem
-    double sparsity_factor = 0.15;
+    Manipulability manip_cpter(model, cam_fid);
+    const double weight_slack = 1e3; // Heavy penalty for breaking the soft manipulability constraint (slack)
+    const double cost_manipulability = 1e-2;  // Weight for smooth null-space posture projection
+    const double manip_beta = 0.1; // Step sizing for manipulability optimization step
+    const double manip_thresh = manip_cpter.manipulability(q0) / 2.;  // Safety threshold floor for manipulability
+
     proxsuite::proxqp::dense::isize dim = eJe.getCols(); // We want to find q, which is of size n
     proxsuite::proxqp::dense::isize n_eq(0); // For the moment no equality constraints
     proxsuite::proxqp::dense::isize n_in(0); // For the moment no inequality constraints, but we could add for instance joint limits avoidance
+    if (opt_use_manipulability) {
+      ++dim; // We also have a slack variable in the state
+      n_in = 2; // two inequalities: one for the manipulability and one for the slack variable
+    }
     // we generate a qp, so the function used from helpers.hpp is
     // in proxqp namespace. The qp is in dense eigen format and
     // you can control its sparsity ratio and strong convexity factor.
@@ -435,6 +484,7 @@ int main(int argc, const char **argv)
     task.computeControlLaw();
     double squared_error = (task.getError()).sumSquare();
     bool clicked = false;
+    VectorXs q_eigen(nq);
     // loop
     while ((squared_error > 1e-6) && (!clicked)) {
       std::cout << "---------------------------------------------" << iter++ << std::endl;
@@ -480,8 +530,47 @@ int main(int argc, const char **argv)
       I.eye(JtastT_Jtask.getRows());
       vpMatrix H = JtastT_Jtask + alpha * I;
       vpColVector e = task.getError();
-      visp::visp2eigen(H, qp_model.H);
-      visp::visp2eigen(task.lambda.getLastValue() * JtaskT * e, qp_model.g);
+      if (opt_use_manipulability) {
+        static bool once = true;
+        if (once) {
+          qp_model.H.resize(nu+1, nu+1);
+          qp_model.g.resize(nu+1);
+          qp_model.g(nu) = 0.;
+
+          qp_model.C.resize(2, nu+1);
+          qp_model.C(0, nu) = -1.;
+          qp_model.C.block(nu, 0, 1, nu) = VectorXs::Zero(1, nu);
+          qp_model.C(nu, nu) = -1.;
+
+          qp_model.u = VectorXs::Zero(2, 1);
+          once = false;
+        }
+        // Managing the visual servoing part of H
+        MatrixXs H_visual(nu, nu);
+        visp::visp2eigen(H, H_visual);
+        qp_model.H.block(0, 0, nu, nu) = H_visual;
+        // Managing the slack part of H
+        qp_model.H(nu, nu) = weight_slack;
+        qp_model.H *= 2.;
+
+        // Managing the visual servoing part of g
+        MatrixXs g_visual(nu, 1);
+        visp::visp2eigen(task.lambda.getLastValue() * JtaskT * e, g_visual);
+        visp::visp2eigen(q, q_eigen);
+        // Managing the manipulability part of g
+        MatrixXs grad_manip = manip_cpter.gradient(q_eigen);
+        // Summing them up
+        qp_model.g.block(0, 0, nu, 1) = g_visual - cost_manipulability * manip_beta * grad_manip;
+
+        // Manipulability soft constraints
+        qp_model.C.block(0, 0, 1, nu) = grad_manip.transpose();
+        qp_model.u(0, 0) = manip_cpter.manipulability(q_eigen) - manip_thresh;
+      }
+      else {
+        visp::visp2eigen(H, qp_model.H);
+        visp::visp2eigen(task.lambda.getLastValue() * JtaskT * e, qp_model.g);
+      }
+
       if (opt_use_limits) {
         VectorXs q_eigen;
         visp::visp2eigen(q, q_eigen);
@@ -509,13 +598,14 @@ int main(int argc, const char **argv)
             qp_model.u);
       }
       qp.solve();
-      auto q_eigen = qp.results.x;
+      auto state_eigen = qp.results.x;
+      VectorXs q_eigen = state_eigen.block(0, 0, nu, 1);
       visp::eigen2visp(q_eigen, q);
 
       // send the camera velocity to the controller
       robot.setVelocity(vpRobot::ARTICULAR_FRAME, q);
       squared_error = (task.getError()).sumSquare();
-      std::cout << "|| s - s* || = " << squared_error << std::endl;
+      std::cout << "|| s - s* || = " << squared_error << "\tslack = " << (opt_use_manipulability ? std::to_string(state_eigen(nu, 0)) : std::string("NaN")) << std::endl;
 
       vpTime::wait(dt_ms);
     }
@@ -553,10 +643,10 @@ int main(int argc, const char **argv)
 #if (VISP_CXX_STANDARD < VISP_CXX_STANDARD_11)
     if (display != nullptr) {
       delete display;
-  }
+    }
 #endif
     return EXIT_FAILURE;
-}
+  }
 }
 #elif !(defined(VISP_HAVE_DISPLAY))
 int main()
