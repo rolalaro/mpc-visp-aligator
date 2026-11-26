@@ -936,7 +936,8 @@ int main(int argc, const char **argv)
     const double thresh_error_pix = 0.005;
     const double max_iter = 20000; // 2000
     const unsigned int warm_up_iters = 0;
-    while ((s_sstart_inf_pix > thresh_error_pix) && (k < max_iter)) {
+    bool clicked = false;
+    while ((s_sstart_inf_pix > thresh_error_pix) && (k < max_iter) && (!clicked)) {
       ++k;
       vpColVector qdot;
 
@@ -961,7 +962,11 @@ int main(int argc, const char **argv)
         for (const auto &ip: pd_ip) {
           vpDisplay::displayCircle(Iint, ip, 2, vpColor::black, true);
         }
+        vpDisplay::displayText(Iint, 20, 20, "Click to quit or wait until convergence.", vpColor::green);
         vpDisplay::flush(Iint);
+        if (opt_display && opt_click_allowed) {
+          clicked = vpDisplay::getClick(Iint, false);
+        }
       }
 
       if (opt_display && opt_click_allowed && k == 1) {
@@ -1147,19 +1152,19 @@ int main(int argc, const char **argv)
 #if (VISP_CXX_STANDARD < VISP_CXX_STANDARD_11)
     if (display != nullptr) {
       delete display;
-    }
+  }
 #endif
     return EXIT_SUCCESS;
-  }
+}
   catch (const vpException &e) {
     std::cout << "Catch a ViSP exception: " << e << std::endl;
 #if (VISP_CXX_STANDARD < VISP_CXX_STANDARD_11)
     if (display != nullptr) {
       delete display;
-    }
+  }
 #endif
     return EXIT_FAILURE;
-  }
+}
 }
 #elif !(defined(VISP_HAVE_DISPLAY))
 int main()

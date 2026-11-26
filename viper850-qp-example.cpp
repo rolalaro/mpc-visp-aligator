@@ -517,10 +517,10 @@ int main(int argc, const char **argv)
         robot.getInternalView(Iint);
         vpDisplay::displayText(Iint, 20, 20, "Click to quit or wait until convergence.", vpColor::green);
         vpServoDisplay::display(task, cam, Iint);
-        // externalview.display(Iext, cextMo, cMo, cam, vpColor::green);
         vpDisplay::flush(Iint);
-        // vpDisplay::flush(Iext);
-        clicked = vpDisplay::getClick(Iint, false);
+        if (opt_display && opt_click_allowed) {
+          clicked = vpDisplay::getClick(Iint, false);
+        }
       }
 
       double t_start_qp_visu = vpTime::measureTimeMs();
