@@ -131,7 +131,7 @@ public:
       VectorXs qp = q, qm = q;
       qp[i] += eps;
       qm[i] -= eps;
-      grad(0, i) = -(manipulability(qp) - manipulability(qm)) / (2 * eps);
+      grad(0, i) = (manipulability(qp) - manipulability(qm)) / (2 * eps);
     }
     return grad;
   }
