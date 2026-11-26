@@ -364,10 +364,6 @@ int main(int argc, const char **argv)
 
     // ---- Parameters ---------------------------------------------------------
 
-    // Camera intrinsics
-    const double fov_margin = 20.0; // pixels
-    const double weight_fov = 1e3;  // weight for FoV soft constraint
-
     if (opt_display) {
       // Get the internal view
       vpDisplay::display(Iint);
@@ -456,10 +452,12 @@ int main(int argc, const char **argv)
 
     // generate a QP problem
     Manipulability manip_cpter(model, cam_fid);
-    const double weight_slack = 1e3; // Heavy penalty for breaking the soft manipulability constraint (slack)
-    const double cost_manipulability = 1e-2;  // Weight for smooth null-space posture projection
-    const double manip_beta = 0.1; // Step sizing for manipulability optimization step
+    const double weight_slack_manip = 1e3; // Heavy penalty for breaking the soft manipulability constraint (slack)
+    const double cost_manipulability = 5e-3;  // Weight for smooth null-space posture projection
+    const double manip_beta = 0.05; // Step sizing for manipulability optimization step
     const double manip_thresh = manip_cpter.manipulability(q0) / 2.;  // Safety threshold floor for manipulability
+    const double fov_margin = 20.0; // pixels
+    const double weight_slack_fov = 1e3;  // weight for FoV soft constraint
 
     proxsuite::proxqp::dense::isize dim = nu; // We want to find q, which is of size n
     proxsuite::proxqp::dense::isize n_eq(0); // For the moment no equality constraints
@@ -491,7 +489,7 @@ int main(int argc, const char **argv)
     bool clicked = false;
     VectorXs q_eigen(nq);
     // loop
-    while ((squared_error > 1e-6) && (!clicked)) {
+    while ((squared_error > 2e-6) && (!clicked)) {
       ++iter;
       double t_start = vpTime::measureTimeMs();
       vpColVector q;
@@ -544,10 +542,10 @@ int main(int argc, const char **argv)
       qp_model.H.block(0, 0, nu, nu) = H_visual;
 
       if (opt_use_manipulability) {
-        qp_model.H(s_manip_idx, s_manip_idx) = weight_slack;
+        qp_model.H(s_manip_idx, s_manip_idx) = weight_slack_manip;
       }
       if (opt_use_fov) {
-        qp_model.H(s_fov_idx, s_fov_idx) = weight_fov;
+        qp_model.H(s_fov_idx, s_fov_idx) = weight_slack_fov;
       }
       qp_model.H *= 2.;
 
