@@ -627,7 +627,9 @@ int main(int argc, const char **argv)
         visp::visp2eigen(q, q_eigen);
         // Handling simultaneously joint velocity limits and joints position limits
         // using the velocity damper method
+        qp_model.l_box.head(nu) = q_dot_min;
         qp_model.l_box.head(nu).cwiseMax(damper_gain_over_eta * (qmin - q_eigen));
+        qp_model.u_box.head(nu) = q_dot_max;
         qp_model.u_box.head(nu).cwiseMin(damper_gain_over_eta * (qmax - q_eigen));
         qp.init(qp_model.H,
             qp_model.g,
