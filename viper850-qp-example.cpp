@@ -492,7 +492,8 @@ int main(int argc, const char **argv)
     VectorXs q_eigen(nq);
     // loop
     while ((squared_error > 1e-6) && (!clicked)) {
-      std::cout << "---------------------------------------------" << iter++ << std::endl;
+      ++iter;
+      double t_start = vpTime::measureTimeMs();
       vpColVector q;
       robot.getPosition(vpRobot::ARTICULAR_FRAME, q);
 
@@ -524,6 +525,7 @@ int main(int argc, const char **argv)
         clicked = vpDisplay::getClick(Iint, false);
       }
 
+      double t_start_qp_visu = vpTime::measureTimeMs();
       // compute the control law
       task.computeError();
       task.computeInteractionMatrix();
@@ -554,6 +556,7 @@ int main(int argc, const char **argv)
       qp_model.g.setZero();
       qp_model.g.block(0, 0, nu, 1) = g_visual;
 
+      double t_start_qp_manip = vpTime::measureTimeMs();
       visp::visp2eigen(q, q_eigen);
       if (opt_use_manipulability) {
         MatrixXs grad_manip = manip_cpter.gradient(q_eigen);
@@ -577,6 +580,7 @@ int main(int argc, const char **argv)
         row++;
       }
 
+      double t_start_qp_fov = vpTime::measureTimeMs();
       if (opt_use_fov) {
         double u_min = fov_margin;
         double u_max = Iint.getCols() - fov_margin;
@@ -622,6 +626,7 @@ int main(int argc, const char **argv)
         row++;
       }
 
+      double t_start_qp_limits = vpTime::measureTimeMs();
       if (opt_use_limits) {
         VectorXs q_eigen;
         visp::visp2eigen(q, q_eigen);
@@ -650,7 +655,9 @@ int main(int argc, const char **argv)
             qp_model.l,
             qp_model.u);
       }
+      double t_start_qp_solve = vpTime::measureTimeMs();
       qp.solve();
+      double t_end_qp_solve = vpTime::measureTimeMs();
       auto state_eigen = qp.results.x;
       VectorXs q_eigen = state_eigen.block(0, 0, nu, 1);
       visp::eigen2visp(q_eigen, q);
@@ -658,7 +665,33 @@ int main(int argc, const char **argv)
       // send the camera velocity to the controller
       robot.setVelocity(vpRobot::ARTICULAR_FRAME, q);
       squared_error = (task.getError()).sumSquare();
-      std::cout << "|| s - s* || = " << squared_error << "\tslack_manip = " << (opt_use_manipulability ? std::to_string(state_eigen(s_manip_idx, 0)) : std::string("NaN")) << "\tslack_fov = " << (opt_use_fov ? std::to_string(state_eigen(s_fov_idx, 0)) : std::string("NaN")) << std::endl;
+      static bool once_log = true;
+      if (once_log) {
+        once_log = false;
+        std::cout << "Iter;|| s - s* ||(m);dt_total(ms);dt_solving_qp(ms);dt_visual_task(ms);";
+        if (opt_use_manipulability) {
+          std::cout << "dt_manip(ms);slack_manip;";
+        }
+        if (opt_use_fov) {
+          std::cout << "dt_fov(ms);slack_fov;";
+        }
+        if (opt_use_limits) {
+          std::cout << "dt_limits(ms);";
+        }
+        std::cout << std::endl;
+      }
+      std::cout << iter << ";" << squared_error << ";"  << t_end_qp_solve - t_start << ";" << t_end_qp_solve - t_start_qp_solve << ";" << t_start_qp_manip - t_start_qp_visu << ";";
+      if (opt_use_manipulability) {
+        std::cout << t_start_qp_fov - t_start_qp_manip << ";" << state_eigen(s_manip_idx, 0) << ";";
+      }
+      if (opt_use_fov) {
+        std::cout << t_start_qp_limits - t_start_qp_fov << ";" << state_eigen(s_fov_idx, 0) << ";";
+      }
+      if (opt_use_limits) {
+        std::cout << t_start_qp_solve - t_start_qp_limits << ";";
+      }
+
+      std::cout << std::endl;
 
       vpTime::wait(dt_ms);
     }
