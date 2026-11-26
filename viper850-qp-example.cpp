@@ -365,11 +365,8 @@ int main(int argc, const char **argv)
     // ---- Parameters ---------------------------------------------------------
 
     // Camera intrinsics
-    // const double fx = cam.get_px(), fy = cam.get_py();
-    // const double img_w = Iint.getCols(), img_h = Iint.getRows();
-    // const double x_max = fov_margin * (img_w / 2.0) / fx;
-    // const double y_max = fov_margin * (img_h / 2.0) / fy;
-    // const double z_min = 0.05;      // minimum distance in front of the camera [m]
+    const double fov_margin = 20.0; // pixels
+    const double weight_fov = 1e3;  // weight for FoV soft constraint
 
     if (opt_display) {
       // Get the internal view
@@ -464,12 +461,16 @@ int main(int argc, const char **argv)
     const double manip_beta = 0.1; // Step sizing for manipulability optimization step
     const double manip_thresh = manip_cpter.manipulability(q0) / 2.;  // Safety threshold floor for manipulability
 
-    proxsuite::proxqp::dense::isize dim = eJe.getCols(); // We want to find q, which is of size n
+    proxsuite::proxqp::dense::isize dim = nu; // We want to find q, which is of size n
     proxsuite::proxqp::dense::isize n_eq(0); // For the moment no equality constraints
     proxsuite::proxqp::dense::isize n_in(0); // For the moment no inequality constraints, but we could add for instance joint limits avoidance
     if (opt_use_manipulability) {
       ++dim; // We also have a slack variable in the state
-      n_in = 2; // two inequalities: one for the manipulability and one for the slack variable
+      n_in += 2; // two inequalities: one for the manipulability and one for the slack variable
+    }
+    if (opt_use_fov) {
+      ++dim; // slack variable for FoV
+      n_in += 17; // 4 points * 4 boundaries + 1 for slack >= 0
     }
     // we generate a qp, so the function used from helpers.hpp is
     // in proxqp namespace. The qp is in dense eigen format and
@@ -478,6 +479,10 @@ int main(int argc, const char **argv)
 
     // load PROXQP solver with dense backend
     proxsuite::proxqp::dense::QP<double> qp(dim, n_eq, n_in, opt_use_limits);
+
+    // Slack indices
+    int s_manip_idx = opt_use_manipulability ? nu : -1;
+    int s_fov_idx = opt_use_fov ? (nu + (opt_use_manipulability ? 1 : 0)) : -1;
 
     // ---- Main loop ----
     unsigned int iter = 0;
@@ -530,45 +535,91 @@ int main(int argc, const char **argv)
       I.eye(JtastT_Jtask.getRows());
       vpMatrix H = JtastT_Jtask + alpha * I;
       vpColVector e = task.getError();
+      // update H and g
+      MatrixXs H_visual(nu, nu);
+      visp::visp2eigen(H, H_visual);
+      qp_model.H.setZero();
+      qp_model.H.block(0, 0, nu, nu) = H_visual;
+
       if (opt_use_manipulability) {
-        static bool once = true;
-        if (once) {
-          qp_model.H.resize(nu+1, nu+1);
-          qp_model.g.resize(nu+1);
-          qp_model.g(nu) = 0.;
-
-          qp_model.C.resize(2, nu+1);
-          qp_model.C(0, nu) = -1.;
-          qp_model.C.block(nu, 0, 1, nu) = VectorXs::Zero(1, nu);
-          qp_model.C(nu, nu) = -1.;
-
-          qp_model.u = VectorXs::Zero(2, 1);
-          once = false;
-        }
-        // Managing the visual servoing part of H
-        MatrixXs H_visual(nu, nu);
-        visp::visp2eigen(H, H_visual);
-        qp_model.H.block(0, 0, nu, nu) = H_visual;
-        // Managing the slack part of H
-        qp_model.H(nu, nu) = weight_slack;
-        qp_model.H *= 2.;
-
-        // Managing the visual servoing part of g
-        MatrixXs g_visual(nu, 1);
-        visp::visp2eigen(task.lambda.getLastValue() * JtaskT * e, g_visual);
-        visp::visp2eigen(q, q_eigen);
-        // Managing the manipulability part of g
-        MatrixXs grad_manip = manip_cpter.gradient(q_eigen);
-        // Summing them up
-        qp_model.g.block(0, 0, nu, 1) = g_visual - cost_manipulability * manip_beta * grad_manip;
-
-        // Manipulability soft constraints
-        qp_model.C.block(0, 0, 1, nu) = grad_manip.transpose();
-        qp_model.u(0, 0) = manip_cpter.manipulability(q_eigen) - manip_thresh;
+        qp_model.H(s_manip_idx, s_manip_idx) = weight_slack;
       }
-      else {
-        visp::visp2eigen(H, qp_model.H);
-        visp::visp2eigen(task.lambda.getLastValue() * JtaskT * e, qp_model.g);
+      if (opt_use_fov) {
+        qp_model.H(s_fov_idx, s_fov_idx) = weight_fov;
+      }
+      qp_model.H *= 2.;
+
+      MatrixXs g_visual(nu, 1);
+      visp::visp2eigen(task.lambda.getLastValue() * JtaskT * e, g_visual);
+      qp_model.g.setZero();
+      qp_model.g.block(0, 0, nu, 1) = g_visual;
+
+      visp::visp2eigen(q, q_eigen);
+      if (opt_use_manipulability) {
+        MatrixXs grad_manip = manip_cpter.gradient(q_eigen);
+        qp_model.g.block(0, 0, nu, 1) -= cost_manipulability * manip_beta * grad_manip;
+      }
+
+      // update C and u
+      qp_model.C.setZero();
+      qp_model.u.setZero();
+      int row = 0;
+
+      if (opt_use_manipulability) {
+        MatrixXs grad_manip = manip_cpter.gradient(q_eigen);
+        qp_model.C.block(row, 0, 1, nu) = grad_manip.transpose();
+        qp_model.C(row, s_manip_idx) = -1.;
+        qp_model.u(row) = manip_cpter.manipulability(q_eigen) - manip_thresh;
+        row++;
+
+        qp_model.C(row, s_manip_idx) = -1.;
+        qp_model.u(row) = 0.;
+        row++;
+      }
+
+      if (opt_use_fov) {
+        double u_min = fov_margin;
+        double u_max = Iint.getCols() - fov_margin;
+        double v_min = fov_margin;
+        double v_max = Iint.getRows() - fov_margin;
+
+        MatrixXs Jtask_eigen(8, nu);
+        visp::visp2eigen(Jtask, Jtask_eigen);
+
+        for (int i = 0; i < NB_POINTS; ++i) {
+          double cur_x = p[i].get_x();
+          double cur_y = p[i].get_y();
+          double cur_u, cur_v;
+          vpMeterPixelConversion::convertPoint(cam, cur_x, cur_y, cur_u, cur_v);
+
+          // u_max constraint: J_u*q_dot - s_fov <= (u_max - cur_u) / dt
+          qp_model.C.block(row, 0, 1, nu) = Jtask_eigen.row(2 * i);
+          qp_model.C(row, s_fov_idx) = -1.;
+          qp_model.u(row) = (u_max - cur_u) / dt;
+          row++;
+
+          // u_min constraint: -J_u*q_dot - s_fov <= (cur_u - u_min) / dt
+          qp_model.C.block(row, 0, 1, nu) = -Jtask_eigen.row(2 * i);
+          qp_model.C(row, s_fov_idx) = -1.;
+          qp_model.u(row) = (cur_u - u_min) / dt;
+          row++;
+
+          // v_max constraint: J_v*q_dot - s_fov <= (v_max - cur_v) / dt
+          qp_model.C.block(row, 0, 1, nu) = Jtask_eigen.row(2 * i + 1);
+          qp_model.C(row, s_fov_idx) = -1.;
+          qp_model.u(row) = (v_max - cur_v) / dt;
+          row++;
+
+          // v_min constraint: -J_v*q_dot - s_fov <= (cur_v - v_min) / dt
+          qp_model.C.block(row, 0, 1, nu) = -Jtask_eigen.row(2 * i + 1);
+          qp_model.C(row, s_fov_idx) = -1.;
+          qp_model.u(row) = (cur_v - v_min) / dt;
+          row++;
+        }
+        // s_fov >= 0  =>  -s_fov <= 0
+        qp_model.C(row, s_fov_idx) = -1.;
+        qp_model.u(row) = 0.;
+        row++;
       }
 
       if (opt_use_limits) {
@@ -576,8 +627,8 @@ int main(int argc, const char **argv)
         visp::visp2eigen(q, q_eigen);
         // Handling simultaneously joint velocity limits and joints position limits
         // using the velocity damper method
-        qp_model.l_box.cwiseMax(damper_gain_over_eta * (qmin - q_eigen));
-        qp_model.u_box.cwiseMin(damper_gain_over_eta * (qmax - q_eigen));
+        qp_model.l_box.head(nu).cwiseMax(damper_gain_over_eta * (qmin - q_eigen));
+        qp_model.u_box.head(nu).cwiseMin(damper_gain_over_eta * (qmax - q_eigen));
         qp.init(qp_model.H,
             qp_model.g,
             qp_model.A,
@@ -605,7 +656,7 @@ int main(int argc, const char **argv)
       // send the camera velocity to the controller
       robot.setVelocity(vpRobot::ARTICULAR_FRAME, q);
       squared_error = (task.getError()).sumSquare();
-      std::cout << "|| s - s* || = " << squared_error << "\tslack = " << (opt_use_manipulability ? std::to_string(state_eigen(nu, 0)) : std::string("NaN")) << std::endl;
+      std::cout << "|| s - s* || = " << squared_error << "\tslack_manip = " << (opt_use_manipulability ? std::to_string(state_eigen(s_manip_idx, 0)) : std::string("NaN")) << "\tslack_fov = " << (opt_use_fov ? std::to_string(state_eigen(s_fov_idx, 0)) : std::string("NaN")) << std::endl;
 
       vpTime::wait(dt_ms);
     }
